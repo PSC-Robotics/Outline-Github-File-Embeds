@@ -6,8 +6,10 @@ services:
     ports:
       - "3456:3456"
     environment:
+      - GITHUB_APP_ID=${GITHUB_APP_ID}
+      - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
+      - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - GITHUB_TOKEN_PSC_ROBOTICS=${GITHUB_TOKEN_PSC_ROBOTICS}
       - OUTLINE_URL=${OUTLINE_URL}
-      - CACHE_TTL=60
+      - CACHE_TTL=${CACHE_TTL:-60}
     # Add Traefik/Caddy labels here so it's accessible via outline-github.your-domain.com
