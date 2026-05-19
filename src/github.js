@@ -77,48 +77,54 @@ async function getOctokitClient() {
 
 async function fetchFile({ owner, repo, ref, filePath }) {
   const octokit = await getOctokitClient();
+  const authInfo = await octokit.auth({ type: 'installation' });
+  const token = authInfo.token;
 
-  try {
-    const response = await octokit.rest.repos.getContent({
-      owner,
-      repo,
-      path: filePath,
-      ref,
-    });
+  // The GitHub API expects paths to be strictly URI encoded
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encodedPath}?ref=${ref}`;
 
-    const data = response.data;
-    if (Array.isArray(data) || data.type !== 'file') {
-      throw new Error('URL points to a directory, not a file');
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github.v3+json',
+      'User-Agent': 'outline-github-integration'
     }
+  });
 
-    let buffer;
-    if (data.content) {
-      buffer = Buffer.from(data.content, 'base64');
-    } else if (data.download_url) {
-      // For files > 1MB, GitHub omits 'content' and provides a download_url
-      const authHeader = await octokit.auth();
-      const dlRes = await fetch(data.download_url, {
-        headers: { Authorization: `Bearer ${authHeader.token}` }
-      });
-      if (!dlRes.ok) throw new Error(`Failed to download large file: ${dlRes.status}`);
-      buffer = Buffer.from(await dlRes.arrayBuffer());
-    } else {
-      throw new Error('GitHub returned no content and no download_url');
-    }
-
-    return {
-      data: buffer,
-      mimeType: getMimeType(filePath),
-      size: data.size,
-      sha: data.sha,
-      name: data.name,
-    };
-  } catch (err) {
-    if (err.status === 404) throw new Error(`File not found: ${owner}/${repo}@${ref}:${filePath}`);
-    if (err.status === 401) throw new Error('GitHub authentication is invalid or expired');
-    if (err.status === 403) throw new Error('GitHub app lacks permission to access this repo');
-    throw err;
+  if (!response.ok) {
+    if (response.status === 404) throw new Error(`File not found on branch ${ref}: ${filePath}`);
+    if (response.status === 403) throw new Error(`Forbidden (might be file size limit > 1MB): ${await response.text()}`);
+    throw new Error(`GitHub API HTTP ${response.status}`);
   }
+
+  const data = await response.json();
+
+  if (Array.isArray(data) || data.type !== 'file') {
+    throw new Error('URL points to a directory, not a file');
+  }
+
+  let buffer;
+  if (data.content) {
+    buffer = Buffer.from(data.content, 'base64');
+  } else if (data.download_url) {
+    // For files > 1MB, GitHub omits 'content' and provides a download_url
+    const dlRes = await fetch(data.download_url, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!dlRes.ok) throw new Error(`Failed to download large file: ${dlRes.status}`);
+    buffer = Buffer.from(await dlRes.arrayBuffer());
+  } else {
+    throw new Error('GitHub returned no content and no download_url');
+  }
+
+  return {
+    data: buffer,
+    mimeType: getMimeType(filePath),
+    size: data.size,
+    sha: data.sha,
+    name: data.name,
+  };
 }
 
 module.exports = { parseGitHubUrl, fetchFile, getMimeType };
