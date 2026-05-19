@@ -1,0 +1,13 @@
+services:
+  outline-github:
+    build: .
+    container_name: outline-github
+    restart: unless-stopped
+    ports:
+      - "3456:3456"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_TOKEN_PSC_ROBOTICS=${GITHUB_TOKEN_PSC_ROBOTICS}
+      - OUTLINE_URL=${OUTLINE_URL}
+      - CACHE_TTL=60
+    # Add Traefik/Caddy labels here so it's accessible via outline-github.your-domain.com
