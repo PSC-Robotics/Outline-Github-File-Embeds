@@ -24,6 +24,12 @@ app.use((req, res, next) => {
   const outlineUrl = process.env.OUTLINE_URL || '';
   res.setHeader('Access-Control-Allow-Origin', outlineUrl || '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  // Strip /_github prefix if it exists so Cloudflare Tunnel path routing works
+  if (req.url.startsWith('/_github')) {
+    req.url = req.url.replace('/_github', '');
+  }
+
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
