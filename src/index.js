@@ -52,8 +52,9 @@ app.get('/iframely', async (req, res) => {
       const content = await cache.getOrFetch(url, () => github.fetchFile(parsed));
       const fileName = require('path').basename(filePath);
 
-      // Build a thumbnail URL that Outline can fetch (via our /content proxy)
-      const thumbnailUrl = `${BASE_URL}/content?url=${encodeURIComponent(url)}`;
+      // Convert image content to Base64 Data URI
+      const base64Data = content.data.toString('base64');
+      const thumbnailUrl = `data:${content.mimeType};base64,${base64Data}`;
 
       // Return the EXACT format Outline's Iframely plugin expects
       const response = {
