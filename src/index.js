@@ -21,6 +21,7 @@ if (!hasAppAuth && !hasTokenAuth) {
 
 // ─── CORS: Allow Outline to call our oEmbed endpoint ─────────────────────────
 app.use((req, res, next) => {
+  console.log(`[REQUEST] ${req.method} ${req.url}`);
   const outlineUrl = process.env.OUTLINE_URL || '';
   res.setHeader('Access-Control-Allow-Origin', outlineUrl || '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
