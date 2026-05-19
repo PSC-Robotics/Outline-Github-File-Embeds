@@ -1,5 +1,6 @@
 const path = require('path');
 const { App, Octokit } = require('octokit');
+const fetch = require('node-fetch');
 
 const MIME_TYPES = {
   '.svg':  'image/svg+xml',
@@ -89,11 +90,22 @@ async function fetchFile({ owner, repo, ref, filePath }) {
     if (Array.isArray(data) || data.type !== 'file') {
       throw new Error('URL points to a directory, not a file');
     }
-    if (!data.content) {
-      throw new Error('GitHub returned no content');
+
+    let buffer;
+    if (data.content) {
+      buffer = Buffer.from(data.content, 'base64');
+    } else if (data.download_url) {
+      // For files > 1MB, GitHub omits 'content' and provides a download_url
+      const authHeader = await octokit.auth();
+      const dlRes = await fetch(data.download_url, {
+        headers: { Authorization: `Bearer ${authHeader.token}` }
+      });
+      if (!dlRes.ok) throw new Error(`Failed to download large file: ${dlRes.status}`);
+      buffer = Buffer.from(await dlRes.arrayBuffer());
+    } else {
+      throw new Error('GitHub returned no content and no download_url');
     }
 
-    const buffer = Buffer.from(data.content, 'base64');
     return {
       data: buffer,
       mimeType: getMimeType(filePath),
