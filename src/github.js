@@ -30,13 +30,13 @@ function parseGitHubUrl(url) {
     if (u.hostname === 'raw.githubusercontent.com') {
       const [, owner, repo, ref, ...rest] = u.pathname.split('/');
       if (!owner || !repo || !ref || rest.length === 0) return null;
-      return { owner, repo, ref, filePath: rest.join('/'), type: 'raw' };
+      return { owner, repo, ref, filePath: decodeURIComponent(rest.join('/')), type: 'raw' };
     }
     if (u.hostname === 'github.com') {
       const [, owner, repo, view, ref, ...rest] = u.pathname.split('/');
       if (!owner || !repo || !view || !ref || rest.length === 0) return null;
       if (view !== 'blob' && view !== 'raw') return null;
-      return { owner, repo, ref, filePath: rest.join('/'), type: view };
+      return { owner, repo, ref, filePath: decodeURIComponent(rest.join('/')), type: view };
     }
     return null;
   } catch {
