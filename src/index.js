@@ -1,7 +1,6 @@
 require('dotenv').config();
 const express = require('express');
 const github = require('./github');
-const oembed = require('./oembed');
 const cache = require('./cache');
 const fetch = require('node-fetch');
 
@@ -19,7 +18,7 @@ if (!hasAppAuth && !hasTokenAuth) {
   process.exit(1);
 }
 
-// ─── CORS: Allow Outline to call our oEmbed endpoint ─────────────────────────
+// ─── CORS ─────────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   console.log(`[REQUEST] ${req.method} ${req.url}`);
   const outlineUrl = process.env.OUTLINE_URL || '';
@@ -29,45 +28,96 @@ app.use((req, res, next) => {
   next();
 });
 
-// ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ 
-  status: 'ok', 
-  auth_mode: hasAppAuth ? 'github_app' : 'personal_access_token' 
+// ─── Health ───────────────────────────────────────────────────────────────
+app.get('/health', (req, res) => res.json({
+  status: 'ok',
+  auth_mode: hasAppAuth ? 'github_app' : 'personal_access_token'
 }));
 
-// ─── Iframely / oEmbed Drop-in Replacement ───────────────────────────────────
-// Set Outline's IFRAMELY_URL to this proxy.
-// If it's a GitHub URL, we render it. If not, we pass it to the real Iframely.
-app.get(['/oembed', '/iframely'], async (req, res) => {
+// ─── Iframely-compatible endpoint ─────────────────────────────────────────
+// Outline calls: GET ${IFRAMELY_URL}/iframely?url=<encoded>&api_key=<key>
+// It expects the Iframely API response format, NOT oEmbed format.
+// See: outline/plugins/iframely/server/iframely.ts
+app.get('/iframely', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'url parameter required' });
+
+  console.log(`[IFRAMELY] Processing URL: ${url}`);
 
   // 1. Try to handle it as a GitHub URL
   const parsed = github.parseGitHubUrl(url);
   if (parsed) {
     try {
+      const { owner, repo, ref, filePath } = parsed;
       const content = await cache.getOrFetch(url, () => github.fetchFile(parsed));
-      const embed = oembed.build(url, parsed, content, BASE_URL);
-      return res.json(embed);
+      const fileName = require('path').basename(filePath);
+
+      // Build a thumbnail URL that Outline can fetch (via our /content proxy)
+      const thumbnailUrl = `${BASE_URL}/content?url=${encodeURIComponent(url)}`;
+
+      // Return the EXACT format Outline's Iframely plugin expects
+      const response = {
+        url: url,
+        meta: {
+          title: `${fileName} — ${owner}/${repo}`,
+          description: `${filePath} on branch ${ref}`,
+          site: 'GitHub'
+        },
+        links: {
+          thumbnail: [{
+            href: thumbnailUrl,
+            type: content.mimeType,
+            rel: ['thumbnail']
+          }],
+          icon: [{
+            href: 'https://github.githubassets.com/favicons/favicon.svg',
+            type: 'image/svg+xml',
+            rel: ['icon']
+          }]
+        }
+      };
+
+      console.log(`[IFRAMELY] ✅ Returning GitHub file metadata for: ${fileName}`);
+      return res.json(response);
     } catch (err) {
-      console.error(`[GitHub embed error] ${url} -`, err.message);
-      // Fall through to real Iframely on error, just in case
+      console.error(`[IFRAMELY] GitHub error for ${url}:`, err.message);
+      // Fall through to real Iframely
     }
   }
 
   // 2. Pass through to real Iframely for everything else (YouTube, Twitter, etc)
+  console.log(`[IFRAMELY] Proxying to real Iframely: ${url}`);
   try {
     const queryParams = new URLSearchParams(req.query).toString();
-    const iframelyRes = await fetch(`https://iframe.ly/api/oembed?${queryParams}`);
+    const iframelyRes = await fetch(`https://iframe.ly/api/iframely?${queryParams}`);
     const iframelyData = await iframelyRes.json();
     return res.status(iframelyRes.status).json(iframelyData);
   } catch (err) {
-    console.error(`[Iframely proxy error] ${url} -`, err.message);
+    console.error(`[IFRAMELY] Proxy error for ${url}:`, err.message);
     return res.status(500).json({ error: 'Failed to fetch from Iframely' });
   }
 });
 
-// ─── Content Proxy ────────────────────────────────────────────────────────────
+// ─── oEmbed endpoint (kept for direct testing / future use) ───────────────
+app.get('/oembed', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'url parameter required' });
+
+  const parsed = github.parseGitHubUrl(url);
+  if (!parsed) return res.status(404).json({ error: 'Not a GitHub URL' });
+
+  try {
+    const content = await cache.getOrFetch(url, () => github.fetchFile(parsed));
+    const oembed = require('./oembed');
+    const embed = oembed.build(url, parsed, content, BASE_URL);
+    return res.json(embed);
+  } catch (err) {
+    console.error(`[oEmbed error] ${url} -`, err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Content Proxy ────────────────────────────────────────────────────────
 // Serves the raw file bytes (Images, SVGs) for the browser to render inline.
 app.get('/content', async (req, res) => {
   const url = req.query.url;
@@ -92,6 +142,5 @@ app.get('/content', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`\n✅ Headless Outline GitHub Integration running at ${BASE_URL}`);
   console.log(`Auth Mode: ${hasAppAuth ? 'GitHub App (Organization)' : 'Personal Access Token'}`);
-  console.log(`\nTo enable in Outline, change your Outline .env to:`);
-  console.log(`  IFRAMELY_URL=${BASE_URL}\n`);
+  console.log(`\nTo enable in Outline, set IFRAMELY_URL=${BASE_URL}\n`);
 });

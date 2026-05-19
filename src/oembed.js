@@ -140,6 +140,12 @@ function build(originalUrl, parsed, content, baseUrl) {
     html,
     width: 800,
     height: null,
+    // Add Iframely-specific metadata format to prevent Outline crashes
+    meta: {
+      title: `${fileName} — ${owner}/${repo}`,
+      site: 'GitHub (Private)',
+      author: owner
+    }
   };
 }
 
