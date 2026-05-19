@@ -8,28 +8,14 @@ const app = express();
 const PORT = process.env.PORT || 3456;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
-// ─── Token Management ────────────────────────────────────────────────────────
-// Load tokens from environment variables.
-// Use a generic GITHUB_TOKEN for all repos, OR specific GITHUB_TOKEN_ORGNAME 
-// (e.g., GITHUB_TOKEN_PSC_ROBOTICS=ghp_...)
-const tokens = {};
-if (process.env.GITHUB_TOKEN) {
-  tokens['default'] = process.env.GITHUB_TOKEN;
-}
-for (const [key, value] of Object.entries(process.env)) {
-  if (key.startsWith('GITHUB_TOKEN_') && key !== 'GITHUB_TOKEN_') {
-    // e.g. GITHUB_TOKEN_PSC_ROBOTICS -> psc_robotics -> psc-robotics
-    const org = key.replace('GITHUB_TOKEN_', '').toLowerCase().replace(/_/g, '-');
-    tokens[org] = value;
-  }
-}
+// ─── Startup Check ────────────────────────────────────────────────────────
+const hasAppAuth = !!(process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY && process.env.GITHUB_APP_INSTALLATION_ID);
+const hasTokenAuth = !!process.env.GITHUB_TOKEN;
 
-function getTokenForOrg(org) {
-  return tokens[org.toLowerCase()] || tokens['default'];
-}
-
-if (Object.keys(tokens).length === 0) {
-  console.warn('\n⚠️ WARNING: No GITHUB_TOKEN environment variables found. Integration will fail to fetch private repos.\n');
+if (!hasAppAuth && !hasTokenAuth) {
+  console.error('\n❌ ERROR: No GitHub authentication configured.');
+  console.error('Please set either GITHUB_APP_ID/KEY/INSTALLATION_ID (preferred for orgs) OR GITHUB_TOKEN.\n');
+  process.exit(1);
 }
 
 // ─── CORS: Allow Outline to call our oEmbed endpoint ─────────────────────────
@@ -42,11 +28,12 @@ app.use((req, res, next) => {
 });
 
 // ─── Health ───────────────────────────────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', tokens_loaded: Object.keys(tokens).length }));
+app.get('/health', (req, res) => res.json({ 
+  status: 'ok', 
+  auth_mode: hasAppAuth ? 'github_app' : 'personal_access_token' 
+}));
 
 // ─── oEmbed Endpoint ─────────────────────────────────────────────────────────
-// Outline calls this when a GitHub URL is pasted.
-// Returns oEmbed JSON with a rendered preview.
 app.get('/oembed', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'url parameter required' });
@@ -55,25 +42,17 @@ app.get('/oembed', async (req, res) => {
     const parsed = github.parseGitHubUrl(url);
     if (!parsed) return res.status(400).json({ error: 'Not a recognised GitHub content URL' });
 
-    const token = getTokenForOrg(parsed.owner);
-    if (!token) {
-      return res.status(401).json({
-        error: `No token configured for org "${parsed.owner}". Set GITHUB_TOKEN or GITHUB_TOKEN_${parsed.owner.replace(/-/g, '_').toUpperCase()} in .env`
-      });
-    }
-
-    const content = await cache.getOrFetch(url, () => github.fetchFile(token, parsed));
+    const content = await cache.getOrFetch(url, () => github.fetchFile(parsed));
     const embed = oembed.build(url, parsed, content, BASE_URL);
     res.json(embed);
 
   } catch (err) {
-    console.error('[oEmbed error]', err.message);
+    console.error(`[oEmbed error] ${url} -`, err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // ─── Content Proxy ────────────────────────────────────────────────────────────
-// Serves the raw file bytes. Used as the src for <img> tags in oEmbed responses.
 app.get('/content', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ error: 'url required' });
@@ -82,22 +61,21 @@ app.get('/content', async (req, res) => {
     const parsed = github.parseGitHubUrl(url);
     if (!parsed) return res.status(400).json({ error: 'Not a GitHub URL' });
 
-    const token = getTokenForOrg(parsed.owner);
-    if (!token) return res.status(401).json({ error: 'Org token not configured' });
-
-    const content = await cache.getOrFetch(url, () => github.fetchFile(token, parsed));
+    const content = await cache.getOrFetch(url, () => github.fetchFile(parsed));
 
     res.setHeader('Content-Type', content.mimeType);
     res.setHeader('Cache-Control', 'public, max-age=60');
     res.send(content.data);
 
   } catch (err) {
+    console.error(`[Content error] ${url} -`, err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(PORT, () => {
   console.log(`\n✅ Headless Outline GitHub Integration running at ${BASE_URL}`);
+  console.log(`Auth Mode: ${hasAppAuth ? 'GitHub App (Organization)' : 'Personal Access Token'}`);
   console.log(`\nTo enable in Outline, add this to your Outline .env:`);
   console.log(`  OEMBED_PROVIDERS=${BASE_URL}/oembed\n`);
 });

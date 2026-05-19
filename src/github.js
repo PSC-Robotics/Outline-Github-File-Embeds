@@ -1,5 +1,5 @@
-const fetch = require('node-fetch');
 const path = require('path');
+const { App, Octokit } = require('octokit');
 
 const MIME_TYPES = {
   '.svg':  'image/svg+xml',
@@ -24,91 +24,89 @@ function getMimeType(filePath) {
   return MIME_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
 }
 
-/**
- * Parse any GitHub URL into its components.
- * Handles:
- *   https://github.com/owner/repo/blob/main/path/to/file.svg
- *   https://github.com/owner/repo/raw/main/path/to/file.svg
- *   https://raw.githubusercontent.com/owner/repo/main/path/to/file.svg
- */
 function parseGitHubUrl(url) {
   try {
     const u = new URL(url);
-
-    // raw.githubusercontent.com/owner/repo/ref/path
     if (u.hostname === 'raw.githubusercontent.com') {
       const [, owner, repo, ref, ...rest] = u.pathname.split('/');
       if (!owner || !repo || !ref || rest.length === 0) return null;
       return { owner, repo, ref, filePath: rest.join('/'), type: 'raw' };
     }
-
-    // github.com/owner/repo/blob/ref/path
-    // github.com/owner/repo/raw/ref/path
     if (u.hostname === 'github.com') {
       const [, owner, repo, view, ref, ...rest] = u.pathname.split('/');
       if (!owner || !repo || !view || !ref || rest.length === 0) return null;
       if (view !== 'blob' && view !== 'raw') return null;
       return { owner, repo, ref, filePath: rest.join('/'), type: view };
     }
-
     return null;
   } catch {
     return null;
   }
 }
 
-/**
- * Fetch a file from GitHub using the GitHub Contents API.
- * Returns { data: Buffer, mimeType: string, size: number, sha: string }
- */
-async function fetchFile(token, { owner, repo, ref, filePath }) {
-  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${ref}`;
+// Global cached octokit instance
+let cachedOctokit = null;
 
-  const response = await fetch(apiUrl, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'outline-github-integration/1.0',
-    },
-  });
+async function getOctokitClient() {
+  if (cachedOctokit) return cachedOctokit;
 
-  if (!response.ok) {
-    if (response.status === 404) throw new Error(`File not found: ${owner}/${repo}@${ref}:${filePath}`);
-    if (response.status === 401) throw new Error('GitHub token is invalid or expired');
-    if (response.status === 403) throw new Error('GitHub token lacks permission to access this repo');
-    throw new Error(`GitHub API error ${response.status}`);
+  // Method 1: GitHub App (Preferred for Organizations)
+  const appId = process.env.GITHUB_APP_ID;
+  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY;
+  const installationId = process.env.GITHUB_APP_INSTALLATION_ID;
+
+  if (appId && privateKey && installationId) {
+    const app = new App({
+      appId,
+      privateKey: privateKey.replace(/\\n/g, '\n'), // handle newlines in env vars
+    });
+    cachedOctokit = await app.getInstallationOctokit(installationId);
+    return cachedOctokit;
   }
 
-  const json = await response.json();
+  // Method 2: Fallback to Personal Access Token / Service Account
+  const token = process.env.GITHUB_TOKEN;
+  if (token) {
+    cachedOctokit = new Octokit({ auth: token });
+    return cachedOctokit;
+  }
 
-  if (json.type !== 'file') throw new Error('URL points to a directory, not a file');
-  if (!json.content)        throw new Error('GitHub returned no content');
-
-  const data = Buffer.from(json.content, 'base64');
-  return {
-    data,
-    mimeType: getMimeType(filePath),
-    size: json.size,
-    sha: json.sha,
-    name: json.name,
-  };
+  throw new Error('No GitHub authentication configured. Set GITHUB_APP_ID/KEY/INSTALLATION_ID or GITHUB_TOKEN.');
 }
 
-/**
- * Test that a token can access an org.
- */
-async function testToken(token, org) {
-  const response = await fetch(`https://api.github.com/orgs/${org}`, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'application/vnd.github.v3+json',
-      'User-Agent': 'outline-github-integration/1.0',
-    },
-  });
+async function fetchFile({ owner, repo, ref, filePath }) {
+  const octokit = await getOctokitClient();
 
-  if (!response.ok) throw new Error(`Token check failed: ${response.status}`);
-  const json = await response.json();
-  return { valid: true, org: json.login, name: json.name, repos: json.public_repos };
+  try {
+    const response = await octokit.rest.repos.getContent({
+      owner,
+      repo,
+      path: filePath,
+      ref,
+    });
+
+    const data = response.data;
+    if (Array.isArray(data) || data.type !== 'file') {
+      throw new Error('URL points to a directory, not a file');
+    }
+    if (!data.content) {
+      throw new Error('GitHub returned no content');
+    }
+
+    const buffer = Buffer.from(data.content, 'base64');
+    return {
+      data: buffer,
+      mimeType: getMimeType(filePath),
+      size: data.size,
+      sha: data.sha,
+      name: data.name,
+    };
+  } catch (err) {
+    if (err.status === 404) throw new Error(`File not found: ${owner}/${repo}@${ref}:${filePath}`);
+    if (err.status === 401) throw new Error('GitHub authentication is invalid or expired');
+    if (err.status === 403) throw new Error('GitHub app lacks permission to access this repo');
+    throw err;
+  }
 }
 
-module.exports = { parseGitHubUrl, fetchFile, testToken, getMimeType };
+module.exports = { parseGitHubUrl, fetchFile, getMimeType };
