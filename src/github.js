@@ -28,15 +28,19 @@ function getMimeType(filePath) {
 function parseGitHubUrl(url) {
   try {
     const u = new URL(url);
+    const allowedOrg = process.env.ALLOWED_ORG || 'PSC-Robotics';
+    
     if (u.hostname === 'raw.githubusercontent.com') {
       const [, owner, repo, ref, ...rest] = u.pathname.split('/');
       if (!owner || !repo || !ref || rest.length === 0) return null;
+      if (allowedOrg && owner.toLowerCase() !== allowedOrg.toLowerCase()) return null;
       return { owner, repo, ref, filePath: decodeURIComponent(rest.join('/')), type: 'raw' };
     }
     if (u.hostname === 'github.com') {
       const [, owner, repo, view, ref, ...rest] = u.pathname.split('/');
       if (!owner || !repo || !view || !ref || rest.length === 0) return null;
       if (view !== 'blob' && view !== 'raw') return null;
+      if (allowedOrg && owner.toLowerCase() !== allowedOrg.toLowerCase()) return null;
       return { owner, repo, ref, filePath: decodeURIComponent(rest.join('/')), type: view };
     }
     return null;
